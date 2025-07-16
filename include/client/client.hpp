@@ -1,9 +1,24 @@
 #pragma once
+#include <boost/asio.hpp>
+#include <spdlog/spdlog.h>
+#include <memory>
+#include <string>
+
+
 namespace irc
 {
 	class Client
 	{
 	public:
-		Client() = default;
+		Client(boost::asio::io_context& io_context, const std::string& host, unsigned short port);
+		void start();
+		void send(const std::string& message);
+
+	private:
+		void startRead();
+
+		boost::asio::io_context& io_context_;
+		boost::asio::ip::tcp::socket socket_;
+		std::shared_ptr<spdlog::logger> logger_;
 	};
-}
+} // namespace irc
