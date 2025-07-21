@@ -30,8 +30,11 @@ namespace irc
 	{
 		// We call a boost asio function that sends data over a socket asynchronously
 		// socket_ on this point holds the connection to the server since we connected to it in the constructor
-		boost::asio::async_write(socket_, boost::asio::buffer(message + "\r\n"),
-			[this](const boost::system::error_code& error, std::size_t /*bytes*/)
+		// We need to create a shared pointer to the message string so that it can be used in the callback handler else
+		// it will be destroyed when the function returns and the callback will try to access a dangling pointer
+		auto msg_ptr = std::make_shared<std::string>(message + "\r\n");
+		boost::asio::async_write(socket_, boost::asio::buffer(*msg_ptr),
+			[this, msg_ptr](const boost::system::error_code& error, std::size_t /*bytes*/)
 			{
 				if (error)
 				{
