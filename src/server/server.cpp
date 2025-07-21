@@ -44,16 +44,16 @@ namespace irc
 	{
 		auto buffer = std::make_shared<std::array<char, 1024>>();
 		// After connection, we read data from the client and storing it in a buffer
-					// Using callback handler which is giving a function to be called when the read operation is complete
-					// The lambda function is a recursive call to read from the client again after processing the message
-					// Create an infinite loop, since the function calls itself recursively
-					// We are definning it twice because its a lambda
-					// But its like saying:
-					// void read()
-					// {
-					//		read();
-					// }
-					// The function will keep calling itself until an error occurs or the client disconnects
+		// Using callback handler which is giving a function to be called when the read operation is complete
+		// The lambda function is a recursive call to read from the client again after processing the message
+		// Create an infinite loop, since the function calls itself recursively
+		// We are definning it twice because its a lambda
+		// But its like saying:
+		// void read()
+		// {
+		//		read();
+		// }
+		// The function will keep calling itself until an error occurs or the client disconnects
 
 		socket->async_read_some(boost::asio::buffer(*buffer),
 			[this, socket, buffer](const boost::system::error_code& error, std::size_t bytes)
@@ -65,24 +65,25 @@ namespace irc
 					auto broadcast_message = parseCommand(message, socket);
 					if (broadcast_message)
 					{
-						broadcast(*broadcast_message, socket);
+						broadcast(*broadcast_message, "", socket);
 					}
 					handleClient(socket); // Continue reading from the client
 				}
 				else
 				{
 					logger_->error("Read error from {}: {}", nicknames_[socket], error.message());
-					clients_.erase(std::remove(clients_.begin(), clients_.end(), socket), clients_.end());
-					nicknames_.erase(socket); // Remove the nickname associated with the socket
+					removeClient(socket, "Connection lost");
 				}
+
 			});
 	}
 
-	void Server::broadcast(const std::string& message, std::shared_ptr<boost::asio::ip::tcp::socket> sender)
+	void Server::broadcast(const std::string& message, const std::string& channel, std::shared_ptr<boost::asio::ip::tcp::socket> sender)
 	{
 		std::string sender_nick = sender && nicknames_.count(sender) ? nicknames_[sender] : "server";
 		std::string full_message = "<" + sender_nick + "> " + message;
-		for (auto& client : clients_)
+		auto& members = channels_[channel];
+		for (auto& client : members)
 		{
 			if (client != sender) // Dont send the message back to the sender
 			{
@@ -96,6 +97,39 @@ namespace irc
 					});
 			}
 		}
+	}
+
+	void Server::sendToClient(std::shared_ptr<boost::asio::ip::tcp::socket> socket, const std::string& message)
+	{
+		std::string full_message = "<server> " + message + "\r\n";
+		boost::asio::async_write(*socket, boost::asio::buffer(full_message),
+			[this](const boost::system::error_code& error, std::size_t /*bytes*/)
+			{
+				if (error)
+				{
+					logger_->error("Write error: {}", error.message());
+				}
+			});
+	}
+
+	void Server::removeClient(std::shared_ptr<boost::asio::ip::tcp::socket> socket, const std::string& quit_message)
+	{
+		std::string nickname = nicknames_[socket];
+		clients_.erase(std::remove(clients_.begin(), clients_.end(), socket), clients_.end());
+		nicknames_.erase(socket);
+		for (auto& [channel, members] : channels_)
+		{
+			members.erase(std::remove(members.begin(), members.end(), socket), members.end());
+			if (members.empty())
+			{
+				channels_.erase(channel);
+			}
+			else
+			{
+				broadcast(nickname + " has quit: " + quit_message, channel);
+			}
+		}
+		logger_->info("Client {} disconnected: {}", nickname, quit_message);
 	}
 
 	std::optional<std::string> Server::parseCommand(const std::string& message, std::shared_ptr<boost::asio::ip::tcp::socket> socket)
@@ -122,8 +156,31 @@ namespace irc
 			}
 			return std::nullopt; // No nickname provided
 		}
+		else if (command == "JOIN")
+		{
+			std::string channel;
+			iss >> channel;
+			if (!channel.empty() && channel[0] == '#')
+			{
+				if (std::find(channels_[channel].begin(), channels_[channel].end(), socket) == channels_[channel].end())
+				{
+					channels_[channel].push_back(socket);
+					logger_->info("{} joined {}", nicknames_[socket], channel);
+					return nicknames_[socket] + " joined " + channel;
+				}
+				return nicknames_[socket] + " is already in " + channel;
+			}
+			return std::nullopt;
+		}
 		else if (command == "PRIVMSG")
 		{
+			std::string channel;
+			iss >> channel;
+			if (channels_.find(channel) == channels_.end() || std::find(channels_[channel].begin(), channels_[channel].end(), socket) == channels_[channel].end())
+			{
+				return "You must join " + channel + " to send messages";
+			}
+
 			std::string msg;
 			std::getline(iss, msg);
 			msg.erase(0, msg.find_first_not_of(" \t"));
@@ -132,6 +189,46 @@ namespace irc
 				return msg;
 			}
 			return std::nullopt; // No message provided
+		}
+		else if (command == "QUIT")
+		{
+			std::string quit_message;
+			std::getline(iss, quit_message);
+			quit_message.erase(0, quit_message.find_first_not_of(" \t"));
+			if (quit_message.empty())
+			{
+				quit_message = "No reason given";
+			}
+			removeClient(socket, quit_message);
+			return std::nullopt;
+		}
+		else if (command == "WHO")
+		{
+			std::string channel;
+			iss >> channel;
+			if (channels_.find(channel) != channels_.end())
+			{
+				std::string user_list = "Users in " + channel + ": ";
+				if (channels_[channel].empty())
+				{
+					user_list += "none";
+				}
+				else
+				{
+					for (size_t i = 0; i < channels_[channel].size(); i++)
+					{
+						user_list += nicknames_[channels_[channel][i]];
+						if (i < channels_[channel].size() - 1)
+						{
+							user_list += ", ";
+						}
+					}
+				}
+				sendToClient(socket, user_list);
+				logger_->info("{} requested WHO in #general", nicknames_[socket]);
+				return std::nullopt; // WHO command does not return a message to broadcast
+			}
+			return std::nullopt;
 		}
 		return std::nullopt; // Unknown command or no message
 	}
