@@ -2,15 +2,20 @@
 #include <boost/asio.hpp>
 #include <spdlog/spdlog.h>
 #include <iostream>
-
-
+#include <QStringList>
+#include <QString>
+#include <QObject>
+#include <sstream>
+#include <array>
+#include <memory>
 
 namespace irc
 {
 	// Constructor for the Client class
-	// Manages a connectio to the server and handles sending and receiving messages
-	Client::Client(boost::asio::io_context& io_context, const std::string& host, unsigned short port)
-		: io_context_(io_context), // Keep a reference to the io_context for asynchronous operations
+	// Manages a connection to the server and handles sending and receiving messages
+	Client::Client(boost::asio::io_context& io_context, const std::string& host, unsigned short port, QObject* parent)
+		: QObject(parent),
+		io_context_(io_context), // Keep a reference to the io_context for asynchronous operations
 		socket_(io_context), // Create a TCP socket using the io_context
 		logger_(spdlog::default_logger())
 	{
@@ -49,13 +54,40 @@ namespace irc
 		auto buffer = std::make_shared<std::array<char, 1024>>();
 		// We start reading from the socket and storing the data in the buffer. We need to use *buffer deference because buffer is a shared pointer.
 		socket_.async_read_some(boost::asio::buffer(*buffer),
-			[this, buffer](const boost::system::error_code& error, std::size_t bytes) // Specificed Boost.Asio function signature.
+			[this, buffer](const boost::system::error_code& error, std::size_t bytes) // Specified Boost.Asio function signature.
 			{
 				if (!error)
 				{
 					std::string message(buffer->data(), bytes);
-					std::cout << message << std::flush;
-					startRead(); // Continue reading from the socket
+					if (message.size() >= 19 && message.compare(0, 19, "<server> Users in ") == 0)
+					{
+						// Parse WHO response
+						std::string user_list = message.substr(message.find(": ") + 2);
+						if (user_list == "none")
+						{
+							emit userListUpdated(QStringList());
+						}
+						else
+						{
+							QStringList users;
+							std::istringstream iss(user_list);
+							std::string user;
+							while (std::getline(iss, user, ','))
+							{
+								user.erase(0, user.find_first_not_of(" \t"));
+								if (!user.empty())
+								{
+									users << QString::fromStdString(user);
+								}
+							}
+							emit userListUpdated(users);
+						}
+					}
+					else
+					{
+						emit messageReceived(QString::fromStdString(message));
+					}
+					startRead();
 				}
 				else
 				{

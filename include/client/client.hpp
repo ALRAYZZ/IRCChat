@@ -3,16 +3,22 @@
 #include <spdlog/spdlog.h>
 #include <memory>
 #include <string>
+#include <QObject>
 
 
 namespace irc
 {
-	class Client
+	class Client : public QObject 
 	{
+		Q_OBJECT
 	public:
-		Client(boost::asio::io_context& io_context, const std::string& host, unsigned short port);
+		Client(boost::asio::io_context& io_context, const std::string& host, unsigned short port, QObject* parent = nullptr);
 		void start();
 		void send(const std::string& message);
+
+	signals:
+		void messageReceived(const QString& message);
+		void userListUpdated(const QStringList& users);
 
 	private:
 		void startRead();
